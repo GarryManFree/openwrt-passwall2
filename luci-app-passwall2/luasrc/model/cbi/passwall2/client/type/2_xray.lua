@@ -15,15 +15,11 @@ if s1.val["type"] ~= type_name then
 	return
 end
 
-local s = NamedSection(m, arg[1], "server")
+local s = NamedSection(m, arg[1], "tmp_" .. s1.sectiontype)
+s.parent = s1
 s.type_name = type_name
 s.option_prefix = "xray_"
-
-local formvalue_proto = luci.http.formvalue(formvalue_key .. "protocol")
-
-if formvalue_proto then s1.val["protocol"] = formvalue_proto end
-
-local arg_select_proto = luci.http.formvalue("select_proto") or ""
+api.set_type_cbi(s)
 
 local ss_method_list = {
 	"aes-128-gcm", "aes-256-gcm", "chacha20-poly1305", "chacha20-ietf-poly1305", "xchacha20-poly1305", "xchacha20-ietf-poly1305", "2022-blake3-aes-128-gcm", "2022-blake3-aes-256-gcm", "2022-blake3-chacha20-poly1305"
@@ -35,8 +31,6 @@ local header_type_list = {
 	"none", "srtp", "utp", "wechat-video", "dtls", "wireguard", "dns"
 }
 
-local xray_version = api.get_app_version("xray")
-
 o = s:option(ListValue, "protocol", translate("Protocol"))
 o:value("vmess", translate("Vmess"))
 o:value("vless", translate("VLESS"))
@@ -45,31 +39,24 @@ o:value("socks", translate("Socks"))
 o:value("shadowsocks", translate("Shadowsocks"))
 o:value("trojan", translate("Trojan"))
 o:value("wireguard", translate("WireGuard"))
-if api.compare_versions(xray_version, ">=", "26.1.13") then
-	o:value("hysteria2", translate("Hysteria2"))
-end
-if api.compare_versions(xray_version, ">=", "1.8.12") then
-	o:value("_balancing", translate("Balancing"))
-end
+o:value("hysteria2", translate("Hysteria2"))
+o:value("masque", "MASQUE")
+o:value("_balancing", translate("Balancing"))
 o:value("_shunt", translate("Shunt"))
 o:value("_iface", translate("Custom Interface"))
-function o.custom_cfgvalue(self, section)
-	if arg_select_proto ~= "" then
-		return arg_select_proto
-	else
-		return m:get(section, self.config_option)
-	end
+
+local protocol_val = m:get(s.section, "protocol")
+local formvalue_proto = s.fields["protocol"]:formvalue(s.section)
+if formvalue_proto then
+	protocol_val = formvalue_proto
 end
 
-local load_balancing_options = s1.val["protocol"] == "_balancing" or arg_select_proto == "_balancing"
-local load_shunt_options = s1.val["protocol"] == "_shunt" or arg_select_proto == "_shunt"
-local load_iface_options = s1.val["protocol"] == "_iface" or arg_select_proto == "_iface"
+local load_balancing_options = protocol_val == "_balancing"
+local load_shunt_options = protocol_val == "_shunt"
+local load_iface_options = protocol_val == "_iface"
 local load_normal_options = true
 if load_balancing_options or load_shunt_options or load_iface_options then
 	load_normal_options = nil
-end
-if not arg_select_proto:find("_") then
-	load_normal_options = true
 end
 
 local netdev_list = api.get_network_devices()
@@ -77,7 +64,7 @@ local node_list = api.get_node_list()
 local fallback_list = {}
 local is_balancer = nil
 for k, e in ipairs(node_list.balancing_list or {}) do
-	if e.id ~= arg[1] then
+	if e.id ~= s.section then
 		fallback_list[#fallback_list + 1] = {
 			id = e["id"],
 			remark = e["remark"],
@@ -99,6 +86,7 @@ if load_balancing_options then -- [[ Load balancing Start ]]
 	o = s:option(MultiValue, "balancing_node", translate("Load balancing node list"), translate("Load balancing node list, <a target='_blank' href='https://xtls.github.io/config/routing.html#balancerobject'>document</a>"))
 	o:depends({ node_add_mode = "manual" })
 	o.widget = "checkbox"
+	o.cast = "table"
 	o.template = m:template_path("/cbi/nodes_multivalue")
 	o.group = {}
 	for k1, v1 in pairs(node_list) do
@@ -107,30 +95,6 @@ if load_balancing_options then -- [[ Load balancing Start ]]
 				o:value(v.id, v.remark)
 				o.group[#o.group+1] = v.group or ""
 			end
-		end
-	end
-	-- Reading the old DynamicList
-	function o.custom_cfgvalue(self, section)
-		return table.concat(m:get(section, "balancing_node") or {}, " ")
-	end
-	-- Write-and-hold DynamicList
-	function o.custom_write(self, section, value)
-		local old = m:get(section, "balancing_node") or {}
-		local new, set = {}, {}
-		for v in value:gmatch("%S+") do
-			new[#new + 1] = v
-			set[v] = 1
-		end
-		for _, v in ipairs(old) do
-			if not set[v] then
-				m:set(section, "balancing_node", new)
-				return
-			end
-			set[v] = nil
-		end
-		for _ in pairs(set) do
-			m:set(section, "balancing_node", new)
-			return
 		end
 	end
 
@@ -213,7 +177,7 @@ if load_balancing_options then -- [[ Load balancing Start ]]
 		local depth = get_fallback_depth(v.id)
 		-- Once the maximum number of nested doll layers is exceeded, further selection of the balancer is not allowed.
 		if depth < MAX_FALLBACK_DEPTH
-			and not will_loop(arg[1], v.id)
+			and not will_loop(s.section, v.id)
 		then
 			o:value(v.id, v.remark)
 			o.group[#o.group + 1] = (v.group and v.group ~= "") and v.group or translate("default")
@@ -291,6 +255,7 @@ o:depends({ protocol = "vless" })
 o = s:option(Value, "username", translate("Username"))
 o:depends({ protocol = "http" })
 o:depends({ protocol = "socks" })
+o:depends({ protocol = "masque" })
 
 o = s:option(Value, "password", translate("Password"))
 o.password = true
@@ -298,6 +263,57 @@ o:depends({ protocol = "http" })
 o:depends({ protocol = "socks" })
 o:depends({ protocol = "shadowsocks" })
 o:depends({ protocol = "trojan" })
+o:depends({ protocol = "masque" })
+
+-- [[ MASQUE ]] --
+o = s:option(Flag, "masque_warp", "WARP")
+o.default = "0"
+o:depends({ protocol = "masque" })
+
+for _, field in ipairs({
+	{ "masque_warp_private_key", translate("WARP Device Private Key") },
+	{ "masque_warp_public_key", translate("WARP Endpoint Public Key") }
+}) do
+	o = s:option(TextValue, field[1], field[2])
+	o.rows = 3
+	o.wrap = "off"
+	o:depends({ protocol = "masque", masque_warp = "1" })
+	o.cfgvalue = function(self, section)
+		return (m:get(section, self.config_option) or ""):gsub("\\n", "\n")
+	end
+	o.validate = function(self, value)
+		return api.trim(value):gsub("\r\n?", "\n"):gsub("\n", "\\n")
+	end
+end
+
+o = s:option(DynamicList, "masque_warp_address", "WARP " .. translate("Local Address"))
+o:depends({ protocol = "masque", masque_warp = "1" })
+
+o = s:option(Value, "masque_path", translate("MASQUE Path"))
+o:depends({ protocol = "masque" })
+
+o = s:option(TextValue, "masque_headers", translate("Custom HTTP Headers"))
+o.rows = 5
+o.wrap = "off"
+o:depends({ protocol = "masque" })
+o.cfgvalue = function(self, section)
+	return (m:get(section, self.config_option) or ""):gsub("\\n", "\n")
+end
+o.validate = function(self, value)
+	value = api.trim(value):gsub("\r\n", "\n"):gsub("\r", "\n")
+	local headers = {}
+	for line in value:gmatch("[^\n]+") do
+		if api.trim(line) ~= "" then
+			local key = line:match("^%s*([^:]+):")
+			key = key and api.trim(key):lower()
+			if not key or not key:match("^[!#$%%&'*+%.%^_`|~%w%-]+$") or headers[key] or key == "host" or key == "capsule-protocol" then
+				return nil, translate("Not true format, please re-enter!") .. " (" .. line .. ")"
+			end
+			headers[key] = true
+		end
+	end
+	return value:gsub("\n", "\\n")
+end
 
 o = s:option(ListValue, "security", translate("Encrypt Method"))
 for a, t in ipairs(security_list) do o:value(t) end
@@ -336,11 +352,7 @@ o:depends({ protocol = "hysteria2", hysteria2_realms = false })
 
 o = s:option(Flag, "hysteria2_realms", translate("Realms"))
 o.default = "0"
-if api.compare_versions(xray_version, ">", "26.5.9") then
-	o:depends({ protocol = "hysteria2"})
-else
-	o:depends({ protocol = "__hide"})
-end
+o:depends({ protocol = "hysteria2"})
 
 o = s:option(Value, "hysteria2_realm_url", translate("Realm URL"), translate("Example:") .. "realm://public@realm.hy2.io/your-realm-name")
 o:depends({ hysteria2_realms = "1" })
@@ -353,6 +365,10 @@ end
 
 o = s:option(DynamicList, "hysteria2_realm_stun", translate("Realm STUN"))
 o.default = { "stun.sip.us:3478", "stun.nextcloud.com:3478", "global.stun.twilio.com:3478" }
+o:depends({ hysteria2_realms = "1" })
+
+o = s:option(Flag, "hysteria2_realm_upnp", translate("Enable") .. " UPnP/NAT-PMP", translate("Enable UPnP/NAT-PMP port mapping on your gateway to improve hole punching success."))
+o.default = "0"
 o:depends({ hysteria2_realms = "1" })
 
 o = s:option(Value, "hysteria2_auth_password", translate("Auth Password"))
@@ -385,6 +401,16 @@ o = s:option(Value, "hysteria2_up_mbps", translate("Max upload Mbps"))
 o:depends({ protocol = "hysteria2" })
 
 o = s:option(Value, "hysteria2_down_mbps", translate("Max download Mbps"))
+o:depends({ protocol = "hysteria2" })
+
+o = s:option(Value, "hysteria2_stream_recv_win", translate("QUIC stream receive window") .. " (MB)")
+o.datatype = "range(1,1000)"
+o.placeholder = "8"
+o:depends({ protocol = "hysteria2" })
+
+o = s:option(Value, "hysteria2_conn_recv_win", translate("QUIC connection receive window") .. " (MB)")
+o.datatype = "range(1,1000)"
+o.placeholder = "20"
 o:depends({ protocol = "hysteria2" })
 
 o = s:option(Value, "hysteria2_idle_timeout", translate("Idle Timeout"), translate("Units:seconds") .. " (4~120)")
@@ -427,6 +453,7 @@ o:value("http/1.1")
 o:value("h2,http/1.1")
 o:value("h3,h2,http/1.1")
 o:depends({ tls = true, reality = false })
+o:depends({ protocol = "masque" })
 
 -- o = s:option(Value, "minversion", translate("minversion"))
 -- o.default = "1.3"
@@ -436,36 +463,44 @@ o:depends({ tls = true, reality = false })
 o = s:option(Value, "tls_serverName", "SNI " .. translate("Domain"))
 o:depends({ tls = true })
 o:depends({ protocol = "hysteria2" })
+o:depends({ protocol = "masque" })
 
 o = s:option(Value, "tls_pinSHA256", translate("TLS Chain Fingerprint (SHA256)"))
 o:depends({ tls = true, reality = false })
 o:depends({ protocol = "hysteria2" })
+o:depends({ protocol = "masque" })
 o.description = translate("Once set, connects only when the server’s chain fingerprint matches.") ..
 		string.format("<a href='javascript:void(0)' onclick='javascript:fetchCertSha256(this)'>%s</a>", "→ " .. translate("Fetch Manually"))
 
 o = s:option(Value, "tls_CertByName", translate("TLS Certificate Name (CertName)"), translate("TLS is used to verify the leaf certificate name."))
 o:depends({ tls = true, reality = false })
 o:depends({ protocol = "hysteria2" })
+o:depends({ protocol = "masque" })
 
 o = s:option(Flag, "tls_certificate", translate("TLS Certificate (PEM)"))
 o.default = "0"
 o:depends({ tls = true, reality = false })
 o:depends({ protocol = "hysteria2" })
+o:depends({ protocol = "masque" })
 
 o = s:option(TextValue, "tls_certificate_pem", "　", translate("Full certificate (chain), PEM format."))
 o.default = ""
 o.rows = 5
 o.wrap = "off"
 o:depends({ tls_certificate = true })
+o.cfgvalue = function(self, section)
+	return (m:get(section, "tls_certificate_pem") or ""):gsub("\\n", "\n")
+end
 o.validate = function(self, value)
-	value = api.trim(value):gsub("\r\n", "\n"):gsub("[ \t]*\n[ \t]*", "\n"):gsub("\n+", "\n")
-	return value
+	value = api.trim(value):gsub("\r\n", "\n"):gsub("\r", "\n"):gsub("[ \t]*\n[ \t]*", "\n"):gsub("\n+", "\n")
+	return value:gsub("\n", "\\n")
 end
 
 o = s:option(Flag, "ech", translate("ECH"))
 o.default = "0"
 o:depends({ tls = true, reality = false })
 o:depends({ protocol = "hysteria2", hysteria2_realms = false })
+o:depends({ protocol = "masque" })
 
 o = s:option(TextValue, "ech_config", translate("ECH Config"))
 o.default = ""
@@ -526,6 +561,7 @@ o:value("TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384")
 o:value("TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256")
 o:value("TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256")
 o:depends({ tls = true, reality = false })
+o:depends({ protocol = "masque" })
 
 o = s:option(TextValue, "reality_mldsa65Verify", "ML-DSA-65 " .. translate("Public key"))
 o.default = ""
@@ -565,10 +601,8 @@ o = s:option(Value, "wireguard_mtu", translate("MTU"))
 o.default = "1420"
 o:depends({ protocol = "wireguard" })
 
-if api.compare_versions(xray_version, ">=", "1.8.0") then
-	o = s:option(Value, "wireguard_reserved", translate("Reserved"), translate("Decimal numbers separated by \",\" or Base64-encoded strings."))
-	o:depends({ protocol = "wireguard" })
-end
+o = s:option(Value, "wireguard_reserved", translate("Reserved"), translate("Decimal numbers separated by \",\" or Base64-encoded strings."))
+o:depends({ protocol = "wireguard" })
 
 o = s:option(Value, "wireguard_keepAlive", translate("Keep Alive"))
 o.default = "0"
@@ -683,13 +717,13 @@ o.validate = function(self, value)
 	if v then return v end
 	return nil, "XHTTP Extra " .. translate("Must be JSON text!")
 end
-o.custom_cfgvalue = function(self, section, value)
+o.cfgvalue = function(self, section, value)
 	local raw = m:get(section, "xhttp_extra")
 	if raw then
 		return api.base64Decode(raw)
 	end
 end
-o.custom_write = function(self, section, value)
+o.write = function(self, section, value)
 	m:set(section, "xhttp_extra", api.base64Encode(value) or "")
 	local success, data = pcall(api.jsonc.parse, value)
 	if success and data then
@@ -705,7 +739,7 @@ o.custom_write = function(self, section, value)
 		m:del(section, "download_address")
 	end
 end
-o.custom_remove = function(self, section, value)
+o.remove = function(self, section, value)
 	m:del(section, "xhttp_extra")
 	m:del(section, "download_address")
 end
@@ -725,6 +759,7 @@ o:depends({ transport = "ws" })
 o:depends({ transport = "httpupgrade" })
 o:depends({ transport = "xhttp" })
 o:depends({ transport = "grpc" })
+o:depends({ protocol = "masque" })
 
 -- [[ Mux.Cool ]]--
 o = s:option(Flag, "mux", "Mux", translate("Enable Mux.Cool"))
@@ -755,6 +790,7 @@ o:depends({ protocol = "trojan" })
 o:depends({ protocol = "shadowsocks" })
 o:depends({ protocol = "wireguard" })
 o:depends({ protocol = "hysteria2", hysteria2_realms = false })
+o:depends({ protocol = "masque" })
 
 o = s:option(TextValue, "finalmask", "　")
 o:depends({ use_finalmask = true })
@@ -770,13 +806,13 @@ o.validate = function(self, value)
 	if v then return v end
 	return nil, "FinalMask " .. translate("Must be JSON text!")
 end
-o.custom_cfgvalue = function(self, section, value)
+o.cfgvalue = function(self, section, value)
 	local raw = m:get(section, "finalmask")
 	if raw then
 		return api.base64Decode(raw)
 	end
 end
-o.custom_write = function(self, section, value)
+o.write = function(self, section, value)
 	m:set(section, "finalmask", api.base64Encode(value) or "")
 end
 
@@ -874,7 +910,7 @@ if not load_shunt_options then
 	for k1, v1 in pairs(node_list) do
 		if k1 ~= "shunt_list" and k1 ~= "iface_list" then
 			for i, v in ipairs(v1) do
-				if v.id ~= arg[1] then
+				if v.id ~= s.section then
 					o1:value(v.id, v.remark)
 					o1.group[#o1.group+1] = (v.group and v.group ~= "") and v.group or translate("default")
 					if k1 == "normal_list" then
@@ -888,14 +924,15 @@ if not load_shunt_options then
 	end
 end
 
-api.luci_types(s1, s)
+api.type_cbi_section(s1, s)
 
 if load_shunt_options then
-	local current_node = m:get(arg[1]) or {}
 	local shunt_lua = loadfile("/usr/lib/lua/luci/model/cbi/passwall2/client/include/shunt_options.lua")
 	setfenv(shunt_lua, getfenv(1))(m, s1, {
-		node_id = arg[1],
-		node = current_node,
+		node = {
+			[".name"] = s.section,
+			type = type_name,
+		},
 		node_list = node_list,
 	})
 end

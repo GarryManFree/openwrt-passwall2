@@ -17,7 +17,6 @@ m:appendTemplate("/cbi/nodes_listvalue_com")
 local has_ss_rust = api.is_finded("sslocal")
 local has_singbox = api.finded_com("sing-box")
 local has_xray = api.finded_com("xray")
-local has_hysteria2 = api.finded_com("hysteria")
 local ss_type = {}
 local trojan_type = {}
 local vmess_type = {}
@@ -45,10 +44,6 @@ if has_xray then
 	if api.compare_versions(xray_version, ">=", "26.1.13") then
 		table.insert(hysteria2_type, s)
 	end
-end
-if has_hysteria2 then
-	local s = "hysteria2"
-	table.insert(hysteria2_type, s)
 end
 local nodes_table = {}
 for k, e in ipairs(api.get_valid_nodes()) do
@@ -123,7 +118,10 @@ end
 
 o = s:option(ListValue, "domain_resolver", translate("Domain DNS Resolve"))
 o.description = translate("If the node address is a domain name, this DNS will be used for resolution.") .. "<br>" ..
-		translate("Supports only Xray or Sing-box node types.")
+		translate("Supports only Xray or Sing-box node types.") .. "<br>" .. string.format('<font color="red">%s</font>',
+		translate("Note: Auto tries to extract node DNS from Clash subscriptions. Disable skips extraction."))
+o.default = ""
+o:value("disable", translate("Disable"))
 o:value("", translate("Auto"))
 o:value("tcp", "TCP")
 o:value("udp", "UDP")
@@ -276,11 +274,12 @@ o:value("proxy", translate("Proxy"))
 
 o = s:option(Value, "user_agent", translate("User-Agent"))
 o.default = "v2rayN/9.99"
-o:value("curl", "Curl")
-o:value("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36 Edg/122.0.0.0", "Edge for Linux")
-o:value("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36 Edg/122.0.0.0", "Edge for Windows")
 o:value("passwall2", "PassWall2")
 o:value("v2rayN/9.99", "v2rayN")
+o:value("clash.meta/v9.99.99", "Clash.Meta")
+o:value("Shadowrocket/9999 CFNetwork/3896.100.1.2.1 Darwin/27.0.0 iPhone19,7", "Shadowrocket")
+o:value("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36 Edg/122.0.0.0", "Edge for Linux")
+o:value("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36 Edg/122.0.0.0", "Edge for Windows")
 
 o = s:option(ListValue, "chain_proxy", translate("Chain Proxy"))
 o:value("", translate("Close(Not use)"))
